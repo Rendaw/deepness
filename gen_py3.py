@@ -3,12 +3,13 @@ from gen_py3 import *
 
 # TODO placement_destroy
 # TODO catch errors in wrapped functions
+# TODO refcounts
 
 
 def argcheck(body, method, arg, desc):
     body.write('if (!{}({}))'.format(method, arg.name))
     with body.indent():
-        body.write('throw GeneralError() << "Argument [{}] is not {}.";'.format(arg.name, desc)) 
+        body.write('throw general_error_t() << "Argument [{}] is not {}.";'.format(arg.name, desc)) 
 
 
 def write_python_read(body, module, el):
@@ -25,7 +26,7 @@ def write_python_read(body, module, el):
                 with body.block():
                     body.write('return {}::create_{}((({} *){})->data);'.format(el.type.name, vtype.type.oldname, pytype.typename(), el.name))
                 first = False
-            body.write('else throw GeneralError() << "Argument [{}] is not any variant of [{}].";'.format(el.name, el.type.oldname)) 
+            body.write('else throw general_error_t() << "Argument [{}] is not any variant of [{}].";'.format(el.name, el.type.oldname)) 
     elif isinstance(el.type, MFunctionObject):
         argcheck(body, 'PyFunction_Check', el, 'a function')
         out = next(gentemp)
@@ -34,7 +35,7 @@ def write_python_read(body, module, el):
         pytype = module.reverse[el.type]
         body.write('if (!PyObject_IsInstance({}, {}))'.format(el.name, pytype.typename()))
         with body.indent():
-            body.write('throw GeneralError() << "Argument [{}] is not a [{}] instance.";'.format(el.name, el.type.oldname)) 
+            body.write('throw general_error_t() << "Argument [{}] is not a [{}] instance.";'.format(el.name, el.type.oldname)) 
         out = next(gentemp)
         body.write('auto {} = (({} *){})->data;'.format(out, pytype.typename(), el.name))
     elif isinstance(el.type, TArray):
@@ -63,7 +64,7 @@ def write_python_read(body, module, el):
                 body.write('{}.emplace_back(std::move({}));'.format(out, subout))
         body.write('else')
         with body.indent():
-            body.write('throw GeneralError() << "Argument [{}] is not a list or tuple.";'.format(el.name)) 
+            body.write('throw general_error_t() << "Argument [{}] is not a list or tuple.";'.format(el.name)) 
     elif isinstance(el.type, (TInt32, TInt64)):
         argcheck(body, 'PyLong_Check', el, 'an integer')
         out = 'PyLong_AsLong({})'.format(el.name)
@@ -134,7 +135,7 @@ def write_python_function_wrapper(body, module, prefix, method):
     wrapper_name += method.name
     body.write('static PyObject *{}({}PyObject *pargs)'.format(
         wrapper_name,
-        'pyint_{} *self, '.format(method.parent.name) if method.parent is not None else '',
+        '{} *self, '.format(module.reverse[method.parent].dataname()) if method.parent is not None else '',
     ))
     with body.block():
         for arg in method.args:
@@ -144,7 +145,7 @@ def write_python_function_wrapper(body, module, prefix, method):
             ''.join([', &' + arg.name for arg in method.args]),
         ))
         with body.indent():
-            body.write('throw GeneralError() << "Arguments invalid.";')  # TODO get real error?
+            body.write('throw general_error_t() << "Arguments invalid.";')  # TODO get real error?
         vals = [write_python_read(body, module, arg) for arg in method.args]
         if method.parent is not None:
             access = MAccess(base=MVar(name='self->data', type=method.parent), field=method)
@@ -163,9 +164,9 @@ def write_python_function_wrapper(body, module, prefix, method):
 
 def write_python_call_wrapper(body, module, prefix, method):
     wrapper_name = '{}_method__call'.format(prefix)
-    body.write('static PyObject *{}(pyint_{} *self, PyObject *pargs, PyObject *kwargs)'.format(
+    body.write('static PyObject *{}({} *self, PyObject *pargs, PyObject *kwargs)'.format(
         wrapper_name,
-        method.parent.name,
+        module.reverse[method.parent].dataname(),
     ))
     with body.block():
         for arg in method.args:
@@ -176,7 +177,7 @@ def write_python_call_wrapper(body, module, prefix, method):
             ''.join([', &' + arg.name for arg in method.args]),
         ))
         with body.indent():
-            body.write('throw GeneralError() << "Arguments invalid.";')  # TODO get real error?
+            body.write('throw general_error_t() << "Arguments invalid.";')  # TODO get real error?
         vals = [write_python_read(body, module, arg) for arg in method.args]
         if method.parent is not None:
             access = MAccess(base=MVar(name='self->data', type=method.parent), field=method)
@@ -196,7 +197,7 @@ def write_python_call_wrapper(body, module, prefix, method):
 
 
 @simpleinit(['base', 'parent'], [])
-class MPyFunction:
+class MPyFunction(MBase):
     def format_meta(self):
         return (
             '{' + 
@@ -212,7 +213,7 @@ class MPyFunction:
 
 
 @simpleinit(['base', 'parent'], [])
-class MPyCallFunction:
+class MPyCallFunction(MBase):
     def write_method_decl(self, module, withdefs):
         mod = Context()
         self.name = write_python_call_wrapper(mod, module, self.parent.prefix(), self.base)
@@ -220,7 +221,7 @@ class MPyCallFunction:
 
 
 @simpleinit(['name', 'type', 'parent'], ['functions'])
-class MPyType:
+class MPyType(MBase):
     call = None
 
     def init2(self):
@@ -249,8 +250,8 @@ class MPyType:
     def write_method_decl(self, withdefs):
         mod = Context()
             
-        mod.write('static struct {}'.format(self.prefix()))
-        with mod.block():
+        mod.write('struct {}'.format(self.prefix()))
+        with mod.block(';'):
             mod.write('PyObject_HEAD')
             mod.write(self.type.write_var_decl('data'))
         mod.write('')
@@ -322,7 +323,7 @@ class MPyType:
 
 
 @simpleinit(['name'], ['functions', 'types'])
-class MPyModule:
+class MPyModule(MBase):
     def __init__(self):
         self.reverse = {}
 
@@ -398,7 +399,7 @@ def apply(name, model):
             def call_body():
                 body = Context()
                 body.write('auto converted_args = PyTuple_New({});'.format(len(operator.args)))
-                body.write('finish<void()> _clean3([&]() { Py_DECREF(converted_args); });')
+                body.write('auto _clean3 = finish([&]() { Py_DECREF(converted_args); });')
                 for index, arg in enumerate(operator.args):
                     newarg = write_python_write(body, module, arg)
                     body.write('PyTuple_SetItem(converted_args, {}, {});'.format(index, newarg))

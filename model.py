@@ -1,6 +1,26 @@
 from gen_base import *
 
-model = []
+model = [
+    MPreRaw(
+        hxx=[
+            '#include <memory>',
+            '#include <iostream>',
+            '#include <vector>',
+            '#include <map>',
+            '',
+            'namespace deepness {',
+            '',
+        ],
+        cxx=[
+            '#include "_deepness.hxx"',
+            '#include "misc.hxx"',
+            '',
+            'namespace deepness {',
+            '',
+        ],
+    )
+]
+
 
 def add(melement):
     model.append(melement)
@@ -122,7 +142,7 @@ context = MClass(
             virtual=True,
         ),
         MFunction(
-            name='do',
+            name='act',
             ret=void,
             args=[
                 MVar(name='action', type=action_function),
@@ -130,13 +150,13 @@ context = MClass(
             virtual=True,
         ),
         MFunction(
-            name='run',
+            name='start',
             ret=void,
             virtual=True,
         ),
     ] + [
         MFunction(
-            name=element.name,
+            name='create_' + element.oldname,
             ret=MVar(name='out', type=element),
             virtual=True,
         )
@@ -149,6 +169,19 @@ open_sig = MFunction(
     name='open',
     ret=MVar(name='out', type=context),
     args=[MVar(name='args', type=TArray(base=string))],
+    body=undefined,
 )
 add(open_sig)
 
+add(MPostRaw(
+    hxx=[
+        '',
+        '}',
+        '',
+    ],
+    cxx=[
+        '',
+        '}',
+        '',
+    ],
+))

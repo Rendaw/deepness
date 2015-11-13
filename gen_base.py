@@ -7,10 +7,10 @@ import inspect
 import operator
 from functools import reduce
 
-# TODO remove proj_int
 # TODO raw, to add headers (only write_header_decl or whatever)
 
-proj_init = []
+
+undefined = object()
 
 
 def mark_constructor():
@@ -246,6 +246,16 @@ class MBase(object):
         return self
 
 
+@simpleinit(['hxx', 'cxx'], [])
+class MPreRaw(MBase):
+    pass
+
+
+@simpleinit(['hxx', 'cxx'], [])
+class MPostRaw(MBase):
+    pass
+
+
 class TPrimitive(MBase):
     def write_proto(self):
         if self.name == self.base:
@@ -307,7 +317,7 @@ string = TString()
 @simpleinit(['base'], [])
 class TArray(MBase):
     def format_type(self):
-        return 'fixed_vector<{}>'.format(self.base.format_type())
+        return 'std::vector<{}>'.format(self.base.format_type())
 
     def write_init_body(self, varname):
         return []
@@ -322,7 +332,7 @@ class TMap(MBase):
         return []
     
 
-@simpleinit(['name', 'private', 'parent', 'ret', 'body', 'virtual', 'static'], ['args'])
+@simpleinit(['name', 'private', 'parent', 'ret', 'body', 'virtual', 'static', 'const'], ['args'])
 class MFunction(MBase):
     def write_method_decl(self, withdefs=False):
         #if self.private and not self.parent:
@@ -335,9 +345,10 @@ class MFunction(MBase):
             v=('virtual ' if self.virtual else ''),
             r=(self.ret.format_type() + ' ') if self.ret else '', 
         )
-        preamble2 = '{n}({a}){b}'.format(
+        preamble2 = '{n}({a}){c}{b}'.format(
             n=self.name,
             a=', '.join(arg.format_decl() for arg in self.args),
+            c=' const' if self.const else '',
             b=' = 0' if self.virtual and self.body is None else '',
         )
         if withdefs:
@@ -352,14 +363,15 @@ class MFunction(MBase):
         return body.f
 
     def write_impl(self):
-        if self.virtual and self.body is None:
+        if (self.body == undefined) or (self.virtual and self.body is None):
             return []
         body = Context()
-        body.write('{}{}{}({})'.format(
+        body.write('{}{}{}({}){}'.format(
             (self.ret.format_type() + ' ') if self.ret else '', 
             self.parent.format_qualifier() if self.parent else '',
             self.name,
             ', '.join(arg.format_decl() for arg in self.args),
+            ' const' if self.const else '',
         ))
         with body.block():
             if isinstance(self.body, types.FunctionType):
@@ -391,9 +403,8 @@ class MClass(MBase):
         def write_constructor():
             return (
                 constructor_ret.write_var_decl() +
-                ['{}->{} = {};'.format(constructor_ret.name, data.name, data.format_move()) for data in self.constructor.args] +
-                (proj_init if self.name == 'project_t' else ['']) +
-                ['return {}'.format(constructor_ret.format_move())]
+                ['{} = {};'.format(MAccess(base=constructor_ret, field=data).format_access(), data.format_move()) for data in self.constructor.args] +
+                ['return {};'.format(constructor_ret.format_move())]
             )
         self.constructor = MFunction(
             name='create', 
@@ -482,7 +493,7 @@ class MClass(MBase):
             with body.indent():
                 body.write(': {}'.format(', '.join(
                     [implements.name for implements in self.implements] + 
-                    (['std::enable_shared_from_this'] if self.identity else [])
+                    (['std::enable_shared_from_this<{}>'.format(self.name)] if self.identity else [])
                 )))
         body.write('{')
         with body.indent():
@@ -588,13 +599,17 @@ class TUnion(MBase):
     def init2(self):
         if self.name:
             self.oldname = self.name
-            self.name += '_t'
+        else:
+            self.name = self.oldname = next(gentemp)
+        self.name += '_t'
     
     def format_type(self):
         body = Context()
         body.write('union{}'.format(' {}'.format(self.name) if self.name else ''))
         body.write('{')
         with body.indent():
+            body.write('{}() {{}}'.format(self.name))
+            body.write('~{}() {{}}'.format(self.name))
             for data in self.data:
                 body.write(data.write_var_decl())
         body.write('}')
@@ -616,6 +631,7 @@ class MVariant(MClass):
         self.typevar = MVar(
             name='type',
             type=enum,
+            private=True,
         )
         self.add_field(self.typevar)
         self.unionvar = MVar(
@@ -624,6 +640,43 @@ class MVariant(MClass):
             private=True,
         )
         self.add_field(self.unionvar)
+
+        def init_copy_body():
+            body = Context()
+            body.write('type = other.type;')
+            body.write('switch (type)')
+            with body.block():
+                for vtype in self.vtypes:
+                    body.write('case {}:'.format(self.typevar.type.get_value(vtype.name)))
+                    with body.indent():
+                        body.write('new (&data.{n}_data) {}{{other.data.{n}_data}};'.format(vtype.type.format_type(), n=vtype.name))
+                        body.write('break;')
+                body.write('default: break;')
+            return body.f
+        self.add_field(MFunction(
+            name=self.name,
+            ret=None,
+            args=[MRawVar(type='{} const &'.format(self.name), name='other')],
+            body=init_copy_body,
+        ))
+        def init_move_body():
+            body = Context()
+            body.write('type = other.type;')
+            body.write('switch (type)')
+            with body.block():
+                for vtype in self.vtypes:
+                    body.write('case {}:'.format(self.typevar.type.get_value(vtype.name)))
+                    with body.indent():
+                        body.write('new (&data.{n}_data) {}{{std::move(other.data.{n}_data)}};'.format(vtype.type.format_type(), n=vtype.name))
+                        body.write('break;')
+                body.write('default: break;')
+            return body.f
+        self.add_field(MFunction(
+            name=self.name,
+            ret=None,
+            args=[MRawVar(type='{} &&'.format(self.name), name='other')],
+            body=init_move_body,
+        ))
         
         create_ret = MVar(name='out', type=self)
         function_create_none = MFunction(
@@ -633,7 +686,7 @@ class MVariant(MClass):
             body=
                 create_ret.write_var_decl() +
                 [
-                    'out->type = NONE;',
+                    '{} = NONE;'.format(MAccess(base=create_ret, field=self.typevar).format_access()),
                     'return out;',
                 ] +
                 [],
@@ -646,6 +699,7 @@ class MVariant(MClass):
             ret=MVar(name='out', type=TBool()),
             args=[],
             body=['return type != NONE;'],
+            const=True,
         )
         self.add_field(function_is_set)
 
@@ -662,14 +716,16 @@ class MVariant(MClass):
 
         self.destructor_body.append('destroy();')
 
-        self.destroy_body = Context()
         def write_function_destroy():
             body = Context()
             body.write('switch (type)')
-            body.write('{')
-            with body.indent():
-                body.write(self.destroy_body.f)
-            body.write('}')
+            with body.block():
+                for vtype in self.vtypes:
+                    body.write('case {}:'.format(self.typevar.type.get_value(vtype.name)))
+                    with body.indent():
+                        body.write('placement_destroy(data.{}_data);'.format(vtype.name, vtype.type.format_type()))
+                        body.write('break;')
+                body.write('default: break;')
             return body.f
         function_destroy = MFunction(
             name='destroy',
@@ -679,6 +735,23 @@ class MVariant(MClass):
             private=True,
         )
         self.add_field(function_destroy)
+
+        def format_name_body():
+            body = Context()
+            body.write('switch (type)')
+            with body.block():
+                for vtype in self.vtypes:
+                    body.write('case {}:'.format(self.typevar.type.get_value(vtype.name)))
+                    with body.indent():
+                        body.write('return "{}";'.format(vtype.name))
+                        body.write('break;')
+                body.write('default: return "unset";')
+            return body.f
+        self.add_field(MFunction(
+            name='format_name',
+            ret=MVar(name='out', type=string),
+            body=format_name_body,
+        ))
 
         for val in data or []:
             self.add_val(val)
@@ -696,8 +769,8 @@ class MVariant(MClass):
             body=
                 create_ret.write_var_decl() +
                 [
-                    'out->type = {};'.format(self.typevar.type.get_value(val.name)),
-                    'new (&out->data.{}_data) {}({});'.format(val.name, val.type.format_type(), create_arg.format_move()),
+                    'out.type = {};'.format(self.typevar.type.get_value(val.name)),
+                    'new (&out.data.{}_data) {}({});'.format(val.name, val.type.format_type(), create_arg.format_move()),
                     'return out;',
                 ] +
                 [],
@@ -712,17 +785,18 @@ class MVariant(MClass):
             body=[
                 'return {} == {};'.format(self.typevar.name, self.typevar.type.get_value(val.name)),
             ],
+            const=True,
         )
         self.add_field(function_is)
         self.checks[val.type] = function_is
         
-        function_get = MFunction(
+        function_get = MFunction(  # TODO make a const version?  Make a "{}_move" option?
             name='{}_get'.format(val.name),
-            ret=MVar(name='out', type=val.type),
+            ret=MVar(name='out', type=val.type),  # TODO make a reference?
             args=[],
             body=[
-                'if (!is_{}) throw GeneralError() << "Variant {} is the wrong type (wanted {}, is " << format_name() << ")");'.format(val.name, self.name, val.name),
-                'return data.{};'.format(val.name),
+                'if (!is_{}()) throw general_error_t() << "Variant {} is the wrong type (wanted {}, is " << format_name() << ")";'.format(val.name, self.name, val.name),
+                'return data.{}_data;'.format(val.name),
             ],
         )
         self.add_field(function_get)
@@ -740,11 +814,6 @@ class MVariant(MClass):
             ],
         )
         self.add_field(function_set)
-
-        self.destroy_body.write('case {}:'.format(self.typevar.type.get_value(val.name)))
-        with self.destroy_body.indent():
-            self.destroy_body.write('data.{}_data.~{}();'.format(val.name, val.type.name))
-            self.destroy_body.write('break;')
 
     def get_check(self, vtype):
         return self.checks[vtype]

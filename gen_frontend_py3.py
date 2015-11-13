@@ -70,10 +70,10 @@ def apply():
 
     def write_call(body, name, ret, args, obj=None):
         body.write('auto function = PyObject_GetAttrString({}, "{}");'.format(obj.name, name))
-        body.write('finish<void()> _clean2([&]() { Py_DECREF(function); });')
-        body.write('if (!function) throw GeneralError() << "Function [{}] is undefined.";'.format(name))
+        body.write('auto _clean2 = finish([&]() { Py_DECREF(function); });')
+        body.write('if (!function) throw general_error_t() << "Function [{}] is undefined.";'.format(name))
         body.write('auto converted_args = PyTuple_New({});'.format(len(args)))
-        body.write('finish<void()> _clean3([&]() { Py_DECREF(converted_args); });')
+        body.write('auto _clean3 = finish([&]() { Py_DECREF(converted_args); });')
         for index, arg in enumerate(args):
             newarg = write_python_write(body, module, arg)
             body.write('PyTuple_SetItem(converted_args, {}, {});'.format(index, newarg))
@@ -113,19 +113,19 @@ def apply():
     def do_body():
         body = Context()
         body.write('PyGILState_STATE gstate = PyGILState_Ensure();')
-        write_call(body, 'do', void, [do_arg], obj=data)
+        write_call(body, 'act', void, [do_arg], obj=data)
         body.write('PyGILState_Release(gstate);')
         return body.f
     context.add_field(MFunction(
-        name='do',
+        name='act',
         ret=void,
         args=[do_arg],
         body=do_body,
     ))
     context.add_field(MFunction(
-        name='run',
+        name='start',
         ret=void,
-        body=default_body('run', void, []),
+        body=default_body('start', void, []),
     ))
 
     # Define elements + context element factory methods
@@ -141,7 +141,7 @@ def apply():
             body.write('return {}::create({});'.format(element.name, ret.format_move()))
             return body.f
         context.add_field(MFunction(
-            name=element.name,
+            name='create_' + element.oldname,
             ret=element,
             body=context_body,
         ))
@@ -153,10 +153,10 @@ def apply():
         body.write('Py_Initialize();')
         body.write('std::string name = read_argv(args, "python3-module");')
         body.write('if (name.empty()) name = read_config("python3-module");')
-        body.write('if (name.empty()) throw GeneralError() << "No specified deepness python3 frontend module; You must specify a module.";')
+        body.write('if (name.empty()) throw general_error_t() << "No specified deepness python3 frontend module; You must specify a module.";')
         body.write('PyObject *module = PyImport_Import(PyUnicode_FromString(name.c_str()));')
-        body.write('if (!module) throw GeneralError() << "Couldn\'t import deepness python3 frontend module [" << name << "].";')
-        #body.write('finish<void()> _clean1([&]() { Py_DECREF(module); });')
+        body.write('if (!module) throw general_error_t() << "Couldn\'t import deepness python3 frontend module [" << name << "].";')
+        #body.write('auto _clean1 = finish([&]() { Py_DECREF(module); });')
         out = MRawVar(name='out', type='PyObject *')
         write_call(body, 'open', out, model.open_sig.args, obj=MRawVar(name='module', type='PyObject *', pointer=True))
         body.write('return pycontext_t::create(std::move(out));')
