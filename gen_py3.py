@@ -3,36 +3,43 @@ from gen_py3 import *
 
 # TODO placement_destroy
 # TODO catch errors in wrapped functions
-# TODO operator() -> __call__
 
-def write_python_read(body, el):
+
+
+def write_python_read(body, module, el):
     out = el.name
-    if isinstance(el.type, MClass):
-        # TODO check derived types as well
-        body.write('if (!PyObject_IsInstance({}, pytype_{}_type))'.format(el.name, el.type.name))  # TODO use type name lookup in module
+    if isinstance(el.type, MVariant):
+        first = True
+        temp = next(gentemp)
+        out = '{}()'.format(temp)
+        body.write('auto {} = [&]()'.format(temp))
+        with body.block(';'):
+            for vtype in el.type.vtypes:
+                pytype = module.reverse[vtype.type]
+                body.write('{}if (PyObject_IsInstance({}, {}))'.format('' if first else 'else ', vtype.name, pytype.typename()))
+                with body.block():
+                    body.write('return {}::create_{}((({} *){})->data);'.format(el.type.name, vtype.type.oldname, pytype.typename(), el.name))
+                first = False
+            body.write('else throw GeneralError() << "Argument [{}] is not any variant of [{}].";'.format(el.name, el.type.oldname)) 
+    elif isinstance(el.type, MFunctionObject):
+        body.write('if (!PyFunction_Check({}))'.format(el.name))
+        with body.indent():
+            body.write('throw GeneralError() << "Argument [{}] is not a function.";'.format(el.name)) 
+        out = next(gentemp)
+        body.write('auto {} py{}::create({});'.format(out, el.type.name, el.name))
+    elif isinstance(el.type, MClass):
+        pytype = module.reverse[el.type]
+        body.write('if (!PyObject_IsInstance({}, {}))'.format(el.name, pytype.typename()))
         with body.indent():
             body.write('throw GeneralError() << "Argument [{}] is not a [{}] instance.";'.format(el.name, el.type.oldname)) 
         out = next(gentemp)
-        body.write('auto {} = {}->data'.format(out, el.name))  # TODO cast, see above note
+        body.write('auto {} = (({} *){})->data;'.format(out, pytype.typename(), el.name))
     elif isinstance(el.type, TString):
         body.write('if (!PyUnicode_Check({}))'.format(el.name))
         with body.indent():
             body.write('throw GeneralError() << "Argument [{}] is not a string.";'.format(el.name)) 
         out = next(gentemp)
         body.write('auto {} = PyUnicode_AsUTF8({})'.format(out, el.name))
-    elif isinstance(el.type, MFunction):
-        body.write('if (!PyFunction_Check({}))'.format(el.name))
-        with body.indent():
-            body.write('throw GeneralError() << "Argument [{}] is not a function.";'.format(el.name)) 
-        out = next(gentemp)
-        body.write('{} {}{{{}}};'.format(
-            'pyfunction<{}({})>'.format(
-                el.type.ret.format_type(),
-                ', '.join(arg.format_type() for arg in el.args),
-            ),
-            out,
-            arg.name,
-        ))
     elif isinstance(el.type, TArray):
         out = next(gentemp)
         body.write('if (PyList_Check({}))'.format(el.name))
@@ -44,7 +51,7 @@ def write_python_read(body, el):
             with body.block():
                 subel = MVar(name='subel', type=el.type.base)
                 body.write('auto subel = PyList_GetItem({}, index);'.format(el.name))
-                subout = write_python_read(body, subel)
+                subout = write_python_read(body, module, subel)
                 body.write('{}.emplace_back(std::move({}));'.format(out, subout))
         body.write('else if (PyTuple_Check({}))'.format(el.name))
         with body.block():
@@ -55,24 +62,37 @@ def write_python_read(body, el):
             with body.block():
                 subel = MVar(name='subel', type=el.type.base)
                 body.write('auto subel = PyTuple_GetItem({}, index);'.format(el.name))
-                subout = write_python_read(body, subel)
+                subout = write_python_read(body, module, subel)
                 body.write('{}.emplace_back(std::move({}));'.format(out, subout))
         body.write('else')
         with body.indent():
             body.write('throw GeneralError() << "Argument [{}] is not a list or tuple.";'.format(el.name)) 
     elif isinstance(el.type, (TInt32, TInt64, TUInt64, TFloat, TString)):
+        # TODO actually convert these
         pass
     else:
         raise AssertionError('Cannot from-python element type {}'.format(el.type))
     return out
 
 
-def write_python_write(body, el, recurse=None):
+def write_python_write(body, module, el, recurse=None):
     if recurse is None:
         recurse = write_python_write
     out = next(gentemp)
-    if isinstance(el.type, MClass):
-        body.write('auto {} = raw_{n}_type->tp_new(raw_{n}_type, null, null);'.format(out, n=el.type.oldname))
+    if isinstance(el.type, MVariant):
+        first = True
+        for vtype in el.type.vtypes:
+            print([l.name + ': ' + r.name for l, r in module.reverse.items()])
+            pytype = module.reverse[vtype.type]
+            body.write('{}if ({})'.format('' if first else 'else ', MAccess(base=el, field=el.type.get_check(vtype.type)).format_call()))
+            with body.block():
+                body.write('auto {} = {n}->tp_new({n}, null, null);'.format(out, n=pytype.typename()))
+                body.write('new (&{}->data){}({});'.format(out, vtype.format_type(), MAccess(base=el, field=el.type.get_get(vtype.type)).format_call()))
+            first = False
+        out = '(PyObject *){}'.format(out)
+    elif isinstance(el.type, MClass):
+        pytype = module.reverse[el.type]
+        body.write('auto {} = {n}->tp_new({n}, null, null);'.format(out, n=pytype.typename()))
         body.write('new (&{}->data){}({});'.format(out, el.type.format_type(), el.format_read()))
         out = '(PyObject *){}'.format(out)
     elif isinstance(el.type, TArray):
@@ -83,7 +103,7 @@ def write_python_write(body, el, recurse=None):
         with body.block():
             subin = next(gentemp)
             body.write('auto &{} = {}[{}];'.format(subin, el.format_read(), index))
-            subout = write_python_write(body, MVar(name=subin, type=el.type.base), recurse=recurse)
+            subout = write_python_write(body, module, MVar(name=subin, type=el.type.base), recurse=recurse)
             body.write('PyTuple_SetItem({}, {}, {});'.format(out, index, subout))
     elif isinstance(el.type, (TInt32, TInt64)):
         body.write('auto {} = PyInt_FromLong({});'.format(out, el.name))
@@ -93,8 +113,8 @@ def write_python_write(body, el, recurse=None):
         body.write('auto {} = PyFloat_FromDouble({});'.format(out, el.name))
     elif isinstance(el.type, TString):
         body.write('auto {} = PyUnicode_FromStringAndSize({n}.c_str(), {n}.length());'.format(out, n=el.name))
-    elif isinstance(el.type, MFunction):
-        raise AssertionError('Function to-python unimplemented.')
+    else:
+        raise AssertionError('{} to-python unimplemented.'.format(el.type))
     return out
 
 
@@ -127,36 +147,71 @@ def format_python_type_char(el):
     return out + el.name
 
 
-def write_python_function_wrapper(mod, prefix, method):
+def write_python_function_wrapper(body, module, prefix, method):
     wrapper_name = ''
     wrapper_name = '{}_method_'.format(prefix)
     wrapper_name += method.name
-    mod.write('static PyObject *{}({}PyObject *pargs)'.format(
+    print('wrappin {}'.format(wrapper_name))
+    body.write('static PyObject *{}({}PyObject *pargs)'.format(
         wrapper_name,
         'pyint_{} *self, '.format(method.parent.name) if method.parent is not None else '',
     ))
-    with mod.block():
+    with body.block():
         for arg in method.args:
-            mod.write('{};'.format(format_python_type(arg)))
-        mod.write('if (!PyArg_ParseTuple(pargs, "{}", {}))'.format(
+            body.write('{};'.format(format_python_type(arg)))
+        body.write('if (!PyArg_ParseTuple(pargs, "{}"{}))'.format(
             ''.join([format_python_type_char(arg) for arg in method.args]),
-            ', '.join([arg.name for arg in method.args]),
+            ''.join([', &' + arg.name for arg in method.args]),
         ))
-        with mod.indent():
-            mod.write('throw GeneralError() << "Arguments invalid.";')  # TODO get real error?
-        vals = [write_python_read(mod, arg) for arg in method.args]
+        with body.indent():
+            body.write('throw GeneralError() << "Arguments invalid.";')  # TODO get real error?
+        vals = [write_python_read(body, module, arg) for arg in method.args]
         if method.parent is not None:
             access = MAccess(base=MVar(name='self->data', type=method.parent), field=method)
         else:
             access = method
         call = access.format_call(*[MVar(name=val, type=arg.type) for val, arg in zip(vals, method.args)])
         if method.ret is not None and method.ret != void:
-            mod.write('auto {} = {};'.format(method.ret.name, call))
-            out = write_python_write(mod, method.ret)
-            mod.write('return {};'.format(out))
+            body.write('auto {} = {};'.format(method.ret.name, call))
+            out = write_python_write(body, module, method.ret)
+            body.write('return {};'.format(out))
         else:
-            mod.write('{};'.format(call))
-    mod.write('')
+            body.write('{};'.format(call))
+    body.write('')
+    return wrapper_name
+
+
+def write_python_call_wrapper(body, module, prefix, method):
+    wrapper_name = '{}_method__call'.format(prefix)
+    body.write('static PyObject *{}(pyint_{} *self, PyObject *pargs, PyObject *kwargs)'.format(
+        wrapper_name,
+        method.parent.name,
+    ))
+    with body.block():
+        for arg in method.args:
+            body.write('{};'.format(format_python_type(arg)))
+        body.write('char *nokwargs[] = {};')
+        body.write('if (!PyArg_ParseTupleAndKeywords(pargs, kwargs, "{}", nokwargs, {}))'.format(
+            ''.join([format_python_type_char(arg) for arg in method.args]),
+            ''.join([', &' + arg.name for arg in method.args]),
+        ))
+        with body.indent():
+            body.write('throw GeneralError() << "Arguments invalid.";')  # TODO get real error?
+        vals = [write_python_read(body, module, arg) for arg in method.args]
+        if method.parent is not None:
+            access = MAccess(base=MVar(name='self->data', type=method.parent), field=method)
+        else:
+            access = method
+        call = access.format_call(*[MVar(name=val, type=arg.type) for val, arg in zip(vals, method.args)])
+        if method.ret is not None and method.ret != void:
+            body.write('auto {} = {};'.format(method.ret.name, call))
+            out = write_python_write(body, module, method.ret)
+            body.write('return {};'.format(out))
+        else:
+            body.write('{};'.format(call))
+            body.write('Py_INCREF(Py_None);')
+            body.write('return Py_None;')
+    body.write('')
     return wrapper_name
 
 
@@ -170,16 +225,42 @@ class MPyFunction:
             '},'
         )
 
-    def write_method_decl(self, withdefs):
+    def write_method_decl(self, module, withdefs):
         mod = Context()
-        self.name = write_python_function_wrapper(mod, self.parent.prefix(), self.base)
+        self.name = write_python_function_wrapper(mod, module, self.parent.prefix(), self.base)
+        return mod.f
+
+
+@simpleinit(['base', 'parent'], [])
+class MPyCallFunction:
+    def write_method_decl(self, module, withdefs):
+        mod = Context()
+        self.name = write_python_call_wrapper(mod, module, self.parent.prefix(), self.base)
         return mod.f
 
 
 @simpleinit(['name', 'type', 'parent'], ['functions'])
 class MPyType:
+    call = None
+
+    def init2(self):
+        for data in self.type.all_methods():
+            if data.ret is None:
+                continue
+            if data.name == 'operator()':
+                self.call = MPyCallFunction(base=data)
+                self.call.parent = self
+            else:
+                self.add_functions(MPyFunction(base=data))
+
     def prefix(self):
         return '{}_type_{}'.format(self.parent.prefix(), self.name)
+
+    def dataname(self):
+        return self.prefix()
+
+    def typename(self):
+        return '{}_type'.format(self.prefix())
 
     def add_functions(self, function):
         function.parent = self
@@ -195,7 +276,9 @@ class MPyType:
         mod.write('')
 
         for function in self.functions:
-            mod.write(function.write_method_decl(True))
+            mod.write(function.write_method_decl(self.parent, True))
+        if self.call:
+            mod.write(self.call.write_method_decl(self.parent, True))
 
         mod.write('static PyMethodDef {}_methods[] ='.format(self.prefix()))
         with mod.block(';'):
@@ -226,7 +309,10 @@ class MPyType:
             mod.write('nullptr, /* tp_as_sequence */')
             mod.write('nullptr, /* tp_as_mapping */')
             mod.write('nullptr, /* tp_hash */')
-            mod.write('nullptr, /* tp_call */')
+            if self.call:
+                mod.write('{}, /* tp_call */'.format(self.call.name))
+            else:
+                mod.write('nullptr, /* tp_call */')
             mod.write('nullptr, /* tp_str */')
             mod.write('nullptr, /* tp_getattro */')
             mod.write('nullptr, /* tp_setattro */')
@@ -257,6 +343,9 @@ class MPyType:
 
 @simpleinit(['name'], ['functions', 'types'])
 class MPyModule:
+    def __init__(self):
+        self.reverse = {}
+
     def prefix(self):
         return 'pyint_{}'.format(self.name)
 
@@ -269,6 +358,7 @@ class MPyModule:
     
     def add_types(self, pytype):
         pytype.parent = self
+        self.reverse[pytype.type] = pytype
         self.types.append(pytype)
 
     def write_method_decl(self, withdefs):
@@ -281,7 +371,7 @@ class MPyModule:
 
         mod.write('//' + '-' * 78)
         for function in self.functions:
-            mod.write(function.write_method_decl(True))
+            mod.write(function.write_method_decl(self, True))
 
         mod.write('static PyMethodDef {}_methods[] ='.format(self.prefix()))
         with mod.block(';'):
@@ -320,17 +410,45 @@ class MPyModule:
 
 
 def apply(name, model):
+    out = []
     module = MPyModule(name=name)
     for el in model:
-        if isinstance(el, MClass):
-            pytype = MPyType(name=el.oldname, type=el)
-            module.add_types(pytype)
-            for data in el.all_methods():
-                if data.ret is None:
-                    continue
-                pytype.add_functions(MPyFunction(base=data))
+        if isinstance(el, MFunctionObject):
+            operator = el.get_field('operator()')
+            def call_body():
+                body = Context()
+                body.write('auto converted_args = PyTuple_New({});'.format(len(operator.args)))
+                body.write('finish<void()> _clean3([&]() { Py_DECREF(converted_args); });')
+                for index, arg in enumerate(operator.args):
+                    newarg = write_python_write(body, module, arg)
+                    body.write('PyTuple_SetItem(converted_args, {}, {});'.format(index, newarg))
+                body.write('{}PyObject_CallObject(data, converted_args);'.format('{} = '.format(operator.ret.name) if operator.ret != void else ''))
+                if operator.ret != void:
+                    result = write_python_read(body, module, operator.ret)
+                    body.write('return std::move({});'.format(result))
+                return body.f
+            out.append(MClass(
+                name='py{}'.format(el.oldname),
+                implements=[el],
+                fields=[
+                    MFunction(
+                        name='operator()',
+                        ret=operator.ret,
+                        args=operator.args,
+                        body=call_body,
+                    ),
+                    MRawVar(
+                        name='data',
+                        type='PyObject *',
+                        pointer=True,
+                    ),
+                ],
+            ))
+        if isinstance(el, MClass) and not isinstance(el, MVariant):
+            module.add_types(MPyType(name=el.oldname, type=el))
         elif isinstance(el, MFunction):
             if el.ret is None:
                 continue
             module.add_functions(MPyFunction(base=el))
-    return [module]
+    out.append(module)
+    return out

@@ -578,7 +578,7 @@ class TEnum(MBase):
         body.write('enum {}'.format(self.name))
         body.write('{')
         with body.indent():
-            body.write(',\n'.join(['_FIRST = 0'] + self.values.values() + ['_LAST']))
+            body.write(',\n'.join(['_FIRST = 0'] + list(self.values.values()) + ['_LAST']))
         body.write('};')
         return body.f
 
@@ -605,6 +605,10 @@ class MVariant(MClass):
     def __init__(self, name, data=[]):
         data = data or []
         super(MVariant, self).__init__(name=name, nodefaultconstructor=True)
+        
+        self.vtypes = []
+        self.checks = {}
+        self.gets = {}
 
         enum = TEnum(name='type')
         enum.add_values('none')
@@ -682,6 +686,7 @@ class MVariant(MClass):
     def add_val(self, val):
         self.typevar.type.add_value(val.name)
         self.unionvar.type.add_data(MVar(name='{}_data'.format(val.name), type=val.type))
+        self.vtypes.append(val)
         create_ret = MVar(name='out', type=self)
         create_arg = MVar(name='in', type=val.type)
         function_create = MFunction(
@@ -709,6 +714,7 @@ class MVariant(MClass):
             ],
         )
         self.add_field(function_is)
+        self.checks[val.type] = function_is
         
         function_get = MFunction(
             name='{}_get'.format(val.name),
@@ -720,6 +726,7 @@ class MVariant(MClass):
             ],
         )
         self.add_field(function_get)
+        self.gets[val.type] = function_get
 
         set_arg = MVar(name='in', type=val.type)
         function_set = MFunction(
@@ -738,3 +745,9 @@ class MVariant(MClass):
         with self.destroy_body.indent():
             self.destroy_body.write('data.{}_data.~{}();'.format(val.name, val.type.name))
             self.destroy_body.write('break;')
+
+    def get_check(self, vtype):
+        return self.checks[vtype]
+    
+    def get_get(self, vtype):
+        return self.gets[vtype]

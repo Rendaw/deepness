@@ -48,6 +48,7 @@ action_function = MFunctionObject(
     name='action_function',
     ret=void,
 )
+add(action_function)
 add_element(MClass(
     name='action',
     identity=True,
@@ -90,6 +91,7 @@ element_variant = MVariant(
     name='element',
     data=[MVar(name=element.name, type=element) for element in elements],
 )
+add(element_variant)
 
 group.add_field(MFunction(
     name='add',
@@ -102,8 +104,9 @@ group.add_field(MFunction(
 group.add_field(MFunction(
     name='insert',
     virtual=True,
-    ret=MVar(name='out', type=integer),
+    ret=void,
     args=[
+        MVar(name='position', type=integer),
         MVar(name='element', type=element_variant)
     ],
 ))

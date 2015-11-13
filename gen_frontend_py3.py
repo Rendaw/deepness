@@ -11,7 +11,7 @@ def apply():
         model.action_function,
     ]
     frontend_model = gen_py3.apply('deepness_frontend', module_model)
-    module = frontend_model[0]
+    module = frontend_model[-1]
 
     def add(melement):
         frontend_model.append(melement)
@@ -27,7 +27,6 @@ def apply():
         fields=[data],
         identity=True,
     )
-    add(context)
     elements = []
     for element in model.elements:
         pyelement = MClass(
@@ -38,18 +37,36 @@ def apply():
         )
         elements.append(pyelement)
         add(pyelement)
+    add(context)
 
     # Helpers
     function_pytypes = {}
-    def write_python_write(body, arg):
+    def write_python_write(body, module, arg):
         if arg.type in model.elements:
             return 'reinterpret_cast<py{}>({}.get())->data'.format(arg.type.name, arg.format_read())
-        return gen_py3.write_python_write(body, arg)
+        if isinstance(arg.type, MVariant):
+            temp = next(gentemp)
+            body.write('auto {} = [&]()'.format(temp))
+            with body.block(';'):
+                first = True
+                for vtype in arg.type.vtypes:
+                    body.write('{}if ({})'.format('' if first else 'else ', MAccess(base=arg, field=arg.type.get_check(vtype.type)).format_call()))
+                    with body.block():
+                        result = write_python_write(body, module, MVar(name=MAccess(base=arg, field=arg.type.get_get(vtype.type)).format_call(), type=vtype.type))
+                        body.write('return {};'.format(result))
+                    first = False
+                body.write('else')
+                with body.block():
+                    body.write('// should be dead code')
+                    body.write('Py_INCREF(Py_None);')
+                    body.write('return Py_None;')
+            return '{}()'.format(temp)
+        return gen_py3.write_python_write(body, module, arg)
     
-    def write_python_read(body, arg):
+    def write_python_read(body, module, arg):
         if arg.type in model.elements:
             return 'py{}::create({})'.format(arg.type.name, arg.format_read())
-        return gen_py3.write_python_read(body, arg)
+        return gen_py3.write_python_read(body, module, arg)
 
     def write_call(body, name, ret, args, obj=None):
         body.write('auto function = PyObject_GetAttrString({}, "{}");'.format(obj.name, name))
@@ -58,16 +75,17 @@ def apply():
         body.write('auto converted_args = PyTuple_New({});'.format(len(args)))
         body.write('finish<void()> _clean3([&]() { Py_DECREF(converted_args); });')
         for index, arg in enumerate(args):
-            newarg = write_python_write(body, arg)
+            newarg = write_python_write(body, module, arg)
             body.write('PyTuple_SetItem(converted_args, {}, {});'.format(index, newarg))
         body.write('{}PyObject_CallObject(function, converted_args);'.format('{} = '.format(ret.name) if ret != void else ''))
 
     def wrap_method(method, obj):
+        print('reverse wrappin {} in {}'.format(method.name, obj.name))
         def body():
             body = Context()
             write_call(body, method.name, method.ret, method.args, obj=obj)
             if method.ret != void:
-                result = write_python_read(body, method.ret)
+                result = write_python_read(body, module, method.ret)
                 body.write('return std::move({});'.format(result))
             return body.f
         return MFunction(
@@ -82,7 +100,7 @@ def apply():
         body = Context()
         write_call(body, name, ret, args, obj=data)
         if ret != void:
-            result = write_python_read(body, ret)
+            result = write_python_read(body, module, ret)
             body.write('return {};'.format(MVar(name=result, type=ret.type).format_move()))
         return body.f
     add_arg = MVar(name='group', type=model.group)
