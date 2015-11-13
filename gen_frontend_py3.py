@@ -80,7 +80,6 @@ def apply():
         body.write('{}PyObject_CallObject(function, converted_args);'.format('{} = '.format(ret.name) if ret != void else ''))
 
     def wrap_method(method, obj):
-        print('reverse wrappin {} in {}'.format(method.name, obj.name))
         def body():
             body = Context()
             write_call(body, method.name, method.ret, method.args, obj=obj)

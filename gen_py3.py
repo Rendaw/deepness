@@ -5,6 +5,11 @@ from gen_py3 import *
 # TODO catch errors in wrapped functions
 
 
+def argcheck(body, method, arg, desc):
+    body.write('if (!{}({}))'.format(method, arg.name))
+    with body.indent():
+        body.write('throw GeneralError() << "Argument [{}] is not {}.";'.format(arg.name, desc)) 
+
 
 def write_python_read(body, module, el):
     out = el.name
@@ -22,9 +27,7 @@ def write_python_read(body, module, el):
                 first = False
             body.write('else throw GeneralError() << "Argument [{}] is not any variant of [{}].";'.format(el.name, el.type.oldname)) 
     elif isinstance(el.type, MFunctionObject):
-        body.write('if (!PyFunction_Check({}))'.format(el.name))
-        with body.indent():
-            body.write('throw GeneralError() << "Argument [{}] is not a function.";'.format(el.name)) 
+        argcheck(body, 'PyFunction_Check', el, 'a function')
         out = next(gentemp)
         body.write('auto {} py{}::create({});'.format(out, el.type.name, el.name))
     elif isinstance(el.type, MClass):
@@ -34,12 +37,6 @@ def write_python_read(body, module, el):
             body.write('throw GeneralError() << "Argument [{}] is not a [{}] instance.";'.format(el.name, el.type.oldname)) 
         out = next(gentemp)
         body.write('auto {} = (({} *){})->data;'.format(out, pytype.typename(), el.name))
-    elif isinstance(el.type, TString):
-        body.write('if (!PyUnicode_Check({}))'.format(el.name))
-        with body.indent():
-            body.write('throw GeneralError() << "Argument [{}] is not a string.";'.format(el.name)) 
-        out = next(gentemp)
-        body.write('auto {} = PyUnicode_AsUTF8({})'.format(out, el.name))
     elif isinstance(el.type, TArray):
         out = next(gentemp)
         body.write('if (PyList_Check({}))'.format(el.name))
@@ -67,9 +64,23 @@ def write_python_read(body, module, el):
         body.write('else')
         with body.indent():
             body.write('throw GeneralError() << "Argument [{}] is not a list or tuple.";'.format(el.name)) 
-    elif isinstance(el.type, (TInt32, TInt64, TUInt64, TFloat, TString)):
-        # TODO actually convert these
-        pass
+    elif isinstance(el.type, (TInt32, TInt64)):
+        argcheck(body, 'PyLong_Check', el, 'an integer')
+        out = 'PyLong_AsLong({})'.format(el.name)
+    elif isinstance(el.type, TUInt64):
+        argcheck(body, 'PyLong_Check', el, 'an integer')
+        out = 'PyLong_AsSize_t({})'.format(el.name)
+    elif isinstance(el.type, TFloat):
+        argcheck(body, 'PyFloat_Check', el, 'a float')
+        out = 'PyFloat_AsDouble({})'.format(el.name)
+    elif isinstance(el.type, TString):
+        argcheck(body, 'PyUnicode_Check', el, 'a string')
+        temp_size = next(gentemp)
+        temp_buffer = next(gentemp)
+        body.write('size_t {};'.format(temp_size))
+        body.write('char *{};'.format(temp_buffer))
+        body.write('{} = PyUnicode_AsUTF8AndSize({}, &{});'.format(temp_buffer, el.name, temp_size))
+        out = 'std::string({}, {})'.format(temp_buffer, temp_size)
     else:
         raise AssertionError('Cannot from-python element type {}'.format(el.type))
     return out
@@ -82,7 +93,6 @@ def write_python_write(body, module, el, recurse=None):
     if isinstance(el.type, MVariant):
         first = True
         for vtype in el.type.vtypes:
-            print([l.name + ': ' + r.name for l, r in module.reverse.items()])
             pytype = module.reverse[vtype.type]
             body.write('{}if ({})'.format('' if first else 'else ', MAccess(base=el, field=el.type.get_check(vtype.type)).format_call()))
             with body.block():
@@ -106,9 +116,9 @@ def write_python_write(body, module, el, recurse=None):
             subout = write_python_write(body, module, MVar(name=subin, type=el.type.base), recurse=recurse)
             body.write('PyTuple_SetItem({}, {}, {});'.format(out, index, subout))
     elif isinstance(el.type, (TInt32, TInt64)):
-        body.write('auto {} = PyInt_FromLong({});'.format(out, el.name))
+        body.write('auto {} = PyLong_FromLong({});'.format(out, el.name))
     elif isinstance(el.type, TUInt64):
-        body.write('auto {} = PyInt_FromSize_t({});'.format(out, el.name))
+        body.write('auto {} = PyLong_FromSize_t({});'.format(out, el.name))
     elif isinstance(el.type, TFloat):
         body.write('auto {} = PyFloat_FromDouble({});'.format(out, el.name))
     elif isinstance(el.type, TString):
@@ -118,49 +128,19 @@ def write_python_write(body, module, el, recurse=None):
     return out
 
 
-def format_python_type(el):
-    out = ''
-    if isinstance(el.type, (MClass, TString, TArray)):
-        out = 'PyObject *'.format(el.name)
-    elif isinstance(el.type, (TInt32, TInt64, TUInt64)):
-        out = 'int '
-    elif isinstance(el.type, TFloat):
-        out = 'float '
-    else:
-        raise AssertionError('Unimplemented type {}'.format(el.type))
-    return out + el.name
-
-
-def format_python_type_char(el):
-    if isinstance(el.type, (MClass, TString, TArray)):
-        return 'O'
-    elif isinstance(el.type, TInt32):
-        return 'i'
-    elif isinstance(el.type, TInt64):
-        return 'L'
-    elif isinstance(el.type, TUInt64):
-        return 'K'
-    elif isinstance(el.type, TFloat):
-        return 'f'
-    else:
-        raise AssertionError('Unimplemented type {}'.format(el.type))
-    return out + el.name
-
-
 def write_python_function_wrapper(body, module, prefix, method):
     wrapper_name = ''
     wrapper_name = '{}_method_'.format(prefix)
     wrapper_name += method.name
-    print('wrappin {}'.format(wrapper_name))
     body.write('static PyObject *{}({}PyObject *pargs)'.format(
         wrapper_name,
         'pyint_{} *self, '.format(method.parent.name) if method.parent is not None else '',
     ))
     with body.block():
         for arg in method.args:
-            body.write('{};'.format(format_python_type(arg)))
+            body.write('PyObject *{};'.format(arg.name))
         body.write('if (!PyArg_ParseTuple(pargs, "{}"{}))'.format(
-            ''.join([format_python_type_char(arg) for arg in method.args]),
+            'O' * len(method.args),
             ''.join([', &' + arg.name for arg in method.args]),
         ))
         with body.indent():
