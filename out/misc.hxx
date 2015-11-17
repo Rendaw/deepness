@@ -1,11 +1,15 @@
 #include <sstream>
+#include <vector>
+
+namespace deepness
+{
 
 struct general_error_t
 {
-	general_error_t(void) {}
-	general_error_t(general_error_t const &other) : buffer(other.buffer.str()) {}
+	general_error_t(void);
+	general_error_t(general_error_t const &other);
 	template <typename whatever_t> general_error_t &operator <<(whatever_t const &input) { buffer << input; return *this; }
-	operator std::string(void) const { return buffer.str(); }
+	operator std::string(void) const;
 
 	private:
 		std::stringstream buffer;
@@ -19,8 +23,15 @@ template <typename T> void placement_destroy(T &t) { t.~T(); }
 template <typename F> struct finish_t
 {
 	F f;
-	finish_t(F f) { this->f = std::move(f); }
+	finish_t(F &&f) : f(std::move(f)) {}
 	~finish_t(void) { f(); }
 };
 
 template <typename F> finish_t<F> finish(F f) { return finish_t<F>(std::move(f)); }
+
+std::string env(std::string const &name, std::string const &suffix = {}, std::string const &def = {});
+
+std::string read_argv(std::vector<std::string> &argv, std::string const &name, bool remove = true);
+std::string read_config(std::string const &name);
+
+}

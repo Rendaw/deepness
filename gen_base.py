@@ -268,7 +268,7 @@ class TInt32(TPrimitive):
     def init2(self):
         self.base = self.base or 'int32_t'
         if self.name:
-            self.name += '_t'
+            self.name += '_tt'
         else:
             self.name = self.base
 
@@ -278,7 +278,7 @@ class TInt64(TPrimitive):
     def init2(self):
         self.base = self.base or 'int64_t'
         if self.name:
-            self.name += '_t'
+            self.name += '_tt'
         else:
             self.name = self.base
 integer = TInt64()
@@ -289,7 +289,7 @@ class TUInt64(TPrimitive):
     def init2(self):
         self.base = self.base or 'uint64_t'
         if self.name:
-            self.name += '_t'
+            self.name += '_tt'
         else:
             self.name = self.base
 
@@ -404,7 +404,7 @@ class MClass(MBase):
             return (
                 constructor_ret.write_var_decl() +
                 ['{} = {};'.format(MAccess(base=constructor_ret, field=data).format_access(), data.format_move()) for data in self.constructor.args] +
-                ['return {};'.format(constructor_ret.format_move())]
+                ['return {};'.format(constructor_ret.format_read())]
             )
         self.constructor = MFunction(
             name='create', 
@@ -417,7 +417,10 @@ class MClass(MBase):
 
     def init2(self):
         self.oldname = self.name
-        self.name += '_t'
+        self.name += '_tt'
+        for base in self.implements:
+            if base.identity:
+                self.identity = True
         if self.abstract or self.nodefaultconstructor:
             try:
                 self.fields.remove(self.constructor)
@@ -493,7 +496,7 @@ class MClass(MBase):
             with body.indent():
                 body.write(': {}'.format(', '.join(
                     [implements.name for implements in self.implements] + 
-                    (['std::enable_shared_from_this<{}>'.format(self.name)] if self.identity else [])
+                    (['std::enable_shared_from_this<{}>'.format(self.name)] if self.identity and not any(bool(base.identity) for base in self.implements) else [])
                 )))
         body.write('{')
         with body.indent():
@@ -575,7 +578,7 @@ class TEnum(MBase):
     
     def init2(self):
         self.oldname = self.name
-        self.name += '_t'
+        self.name += '_tt'
 
     def add_value(self, value):
         self.values[value] = value.upper()
@@ -601,7 +604,7 @@ class TUnion(MBase):
             self.oldname = self.name
         else:
             self.name = self.oldname = next(gentemp)
-        self.name += '_t'
+        self.name += '_tt'
     
     def format_type(self):
         body = Context()

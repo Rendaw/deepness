@@ -8,14 +8,16 @@ model = [
             '#include <vector>',
             '#include <map>',
             '',
-            'namespace deepness {',
+            'namespace deepness',
+            '{',
             '',
         ],
         cxx=[
             '#include "_deepness.hxx"',
             '#include "misc.hxx"',
             '',
-            'namespace deepness {',
+            'namespace deepness',
+            '{',
             '',
         ],
     )

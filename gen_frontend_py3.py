@@ -43,7 +43,7 @@ def apply():
     function_pytypes = {}
     def write_python_write(body, module, arg):
         if arg.type in model.elements:
-            return 'reinterpret_cast<py{}>({}.get())->data'.format(arg.type.name, arg.format_read())
+            return 'reinterpret_cast<py{} *>({}.get())->data'.format(arg.type.name, arg.format_read())
         if isinstance(arg.type, MVariant):
             temp = next(gentemp)
             body.write('auto {} = [&]()'.format(temp))
@@ -77,7 +77,11 @@ def apply():
         for index, arg in enumerate(args):
             newarg = write_python_write(body, module, arg)
             body.write('PyTuple_SetItem(converted_args, {}, {});'.format(index, newarg))
-        body.write('{}PyObject_CallObject(function, converted_args);'.format('{} = '.format(ret.name) if ret != void else ''))
+        body.write('auto {} = PyObject_CallObject(function, converted_args);'.format(ret.name))
+        body.write('if ({} == nullptr)'.format(ret.name))
+        with body.block():
+            body.write('PyErr_Print();')
+            body.write('throw general_error_t() << "Error in python3 frontend code.  Details logged to stderr.";')
 
     def wrap_method(method, obj):
         def body():
@@ -85,7 +89,7 @@ def apply():
             write_call(body, method.name, method.ret, method.args, obj=obj)
             if method.ret != void:
                 result = write_python_read(body, module, method.ret)
-                body.write('return std::move({});'.format(result))
+                body.write('return {};'.format(result))
             return body.f
         return MFunction(
             name=method.name,
@@ -134,11 +138,11 @@ def apply():
             if method.ret is None:
                 continue
             pyelement.add_field(wrap_method(method, data))
-        def context_body(element=element):
+        def context_body(element=element, pyelement=pyelement):
             body = Context()
             ret = MVar(name='out', type=element)
             write_call(body, element.name, ret, [], obj=data)
-            body.write('return {}::create({});'.format(element.name, ret.format_move()))
+            body.write('return {}::create({});'.format(pyelement.name, ret.format_move()))
             return body.f
         context.add_field(MFunction(
             name='create_' + element.oldname,
@@ -149,6 +153,27 @@ def apply():
     # Define open
     def open_body():
         body = Context()
+        body.write('if (read_argv(args, "list", false) == "true")')
+        with body.block():
+            body.write('Py_Initialize();')
+            body.write('PyRun_SimpleString(')
+            with body.indent():
+                body.write('"import pkg_resources"')
+                body.write('"import email"')
+                body.write('"import traceback"')
+                body.write('"seen = set()"')
+                body.write('"for frontend in pkg_resources.iter_entry_points(group=\'deepness_frontends\'):"')
+                body.write('"    if frontend.module_name in seen:"')
+                body.write('"        continue"')
+                body.write('"    seen.add(frontend.module_name)"')
+                body.write('"    try:"')
+                body.write('"        frontend_dist = pkg_resources.get_distribution(frontend.module_name)"')
+                body.write('"        frontend_meta = dict(email.message_from_string(frontend_dist.get_metadata(\'PKG-INFO\')).items())"')
+                body.write('"        print(\'\\t{}\\t{}\\t{}\\t{}\'.format(frontend.name, frontend_dist.project_name, frontend_meta[\'Summary\'], frontend.module_name))"')
+                body.write('"    except Exception as e:"')
+                body.write('"        traceback.print_exc()"')
+            body.write(');')
+            body.write('return {};')
         body.write('PyImport_AppendInittab("{}", &{});'.format(module.name, module.initname()))
         body.write('Py_Initialize();')
         body.write('std::string name = read_argv(args, "python3-module");')
@@ -159,7 +184,7 @@ def apply():
         #body.write('auto _clean1 = finish([&]() { Py_DECREF(module); });')
         out = MRawVar(name='out', type='PyObject *')
         write_call(body, 'open', out, model.open_sig.args, obj=MRawVar(name='module', type='PyObject *', pointer=True))
-        body.write('return pycontext_t::create(std::move(out));')
+        body.write('return pycontext_tt::create(std::move(out));')
         return body.f
     add(MFunction(
         name='open',
