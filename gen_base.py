@@ -332,7 +332,7 @@ class TMap(MBase):
         return []
     
 
-@simpleinit(['name', 'private', 'parent', 'ret', 'body', 'virtual', 'static', 'const'], ['args'])
+@simpleinit(['name', 'private', 'parent', 'ret', 'body', 'virtual', 'static', 'const', 'export'], ['args'])
 class MFunction(MBase):
     def write_method_decl(self, withdefs=False):
         #if self.private and not self.parent:
@@ -340,9 +340,10 @@ class MFunction(MBase):
         #if self.body is None:
         #    return []
         body = Context()
-        preamble1 = '{s}{v}{r}'.format(
-            s=('static ' if self.static else ''),
-            v=('virtual ' if self.virtual else ''),
+        preamble1 = '{e}{s}{v}{r}'.format(
+            e='extern "C" ' if self.export else '',
+            s='static ' if self.static else '',
+            v='virtual ' if self.virtual else '',
             r=(self.ret.format_type() + ' ') if self.ret else '', 
         )
         preamble2 = '{n}({a}){c}{b}'.format(
@@ -366,7 +367,8 @@ class MFunction(MBase):
         if (self.body == undefined) or (self.virtual and self.body is None):
             return []
         body = Context()
-        body.write('{}{}{}({}){}'.format(
+        body.write('{}{}{}{}({}){}'.format(
+            'extern "C" ' if self.export else '',
             (self.ret.format_type() + ' ') if self.ret else '', 
             self.parent.format_qualifier() if self.parent else '',
             self.name,

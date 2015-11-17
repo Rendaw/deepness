@@ -32,6 +32,7 @@ template <typename F> finish_t<F> finish(F f) { return finish_t<F>(std::move(f))
 std::string env(std::string const &name, std::string const &suffix = {}, std::string const &def = {});
 
 std::string read_argv(std::vector<std::string> &argv, std::string const &name, bool remove = true);
+std::string get_config_path();
 std::string read_config(std::string const &name);
 
 }

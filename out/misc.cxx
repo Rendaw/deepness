@@ -46,19 +46,24 @@ std::string env(std::string const &name, std::string const &suffix, std::string 
 	return std::string(val) + suffix;
 }
 
+std::string get_config_path()
+{
+	return 
+#ifdef _WIN32
+		env("LOCALAPPDATA", {}, env("PROGRAMFILES", {}, "C:/Program Files") + "/deepness/";
+#else
+		env("XDG_CONFIG_HOME", {}, env("HOME", "/.config", "/etc")) + "/deepness/";
+#endif
+}
+
 std::string read_config(std::string const &name)
 {
-	std::ifstream stream
-#ifdef _WIN32
-		(env("LOCALAPPDATA", {}, env("PROGRAMFILES", {}, "C:/Program Files") + "/deepness/" + name);
-#else
-		(env("XDG_CONFIG_HOME", {}, env("HOME", "/.config", "/etc")) + "/deepness/" + name);
-#endif
+	std::ifstream stream(get_config_path() + name);
 	if (!stream) return {};
 	std::vector<char> buffer;
 	buffer.resize(4096);
 	stream.getline(&buffer[0], buffer.size());
-	return std::string(&buffer[0], stream.gcount());
+	return std::string(&buffer[0], stream.gcount() - 1);
 }
 
 }

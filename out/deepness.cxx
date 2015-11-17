@@ -33,12 +33,12 @@ static std::vector<std::string> get_frontend_paths()
 #ifdef _WIN32
 			env("LOCALAPPDATA", {}) + "/deepness/"
 #else
-			env("XDG_DATA_HOME", env("HOME", "/.local/share")) + "/deepness/"
+			env("XDG_DATA_HOME", {}, env("HOME", "/.local/share")) + "/deepness/"
 #endif
 		},
 		{
 #ifdef _WIN32
-			env("PROGRAMFILES", "C:/Program Files") + "/deepness/"
+			env("PROGRAMFILES", {}, "C:/Program Files") + "/deepness/"
 #else
 			"/usr/lib/deepness/"
 #endif
@@ -55,9 +55,9 @@ static bool ends_with(std::string const &base, std::string const &suffix)
 static std::shared_ptr<context_tt> delegate_open(std::string const &path, std::vector<std::string> const &args)
 {
 #ifdef _WIN32
-	HMODULE library = LoadLibrary(path.c_str());
+	auto library = LoadLibrary(path.c_str());
 #else
-	void *library = dlopen(path.c_str(), RTLD_LAZY);
+	auto library = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif
 	if (library == nullptr)
 		throw general_error_t() << "Error loading deepness frontend at [" << path << "]: " << 
@@ -67,9 +67,9 @@ static std::shared_ptr<context_tt> delegate_open(std::string const &path, std::v
 			dlerror();
 #endif
 #ifdef _WIN32
-	FARPROC initializer = GetProcAddress(library, "open");
+	auto initializer = GetProcAddress(library, "deepness_open");
 #else
-	void *initializer = dlsym(library, "open");
+	auto initializer = dlsym(library, "deepness_open");
 #endif
 	if (initializer == nullptr)
 		throw general_error_t() << "Error loading [open] from deepness frontend at [" << path << "]: " << 
@@ -81,6 +81,7 @@ static std::shared_ptr<context_tt> delegate_open(std::string const &path, std::v
 	return reinterpret_cast<decltype(deepness::open) *>(initializer)(args);
 }
 
+std::shared_ptr<context_tt> ooo;
 std::shared_ptr<context_tt> open(std::vector<std::string> args)
 {
 #ifdef _WIN32
@@ -88,6 +89,13 @@ std::shared_ptr<context_tt> open(std::vector<std::string> args)
 #else
 	std::string const &suffix = ".so";
 #endif
+	if (read_argv(args, "paths", false) == "true")
+	{
+		std::cout << "Config path: " << get_config_path() << "\n";
+		for (auto const &path : get_frontend_paths())
+			std::cout << "Frontend path: " << path << "\n";
+		return {};
+	}
 	if (read_argv(args, "list", false) == "true")
 	{
 		for (auto const &path : get_frontend_paths())
@@ -101,24 +109,22 @@ std::shared_ptr<context_tt> open(std::vector<std::string> args)
 #endif
 					continue;
 				std::cout << file.substr(0, file.size() - suffix.size()) << "\n";
-				delegate_open(path + file, args);
+				ooo = delegate_open(path + file, args);
 			}
 		}
 		return {};
 	}
-	else
+
+	std::string name = read_argv(args, "frontend");
+	if (name.empty()) name = read_config("frontend");
+	if (name.empty()) throw general_error_t() << "No specified deepness frontend; You must specify a module.";
+	for (auto const &path : get_frontend_paths())
 	{
-		std::string name = read_argv(args, "frontend");
-		if (name.empty()) name = read_config("frontend");
-		if (name.empty()) throw general_error_t() << "No specified deepness frontend; You must specify a module.";
-		for (auto const &path : get_frontend_paths())
-		{
-			std::string const full_path = path + name + suffix;
-			if (std::ifstream(full_path.c_str()).is_open())
-				return delegate_open(full_path, args);
-		}
-		throw general_error_t() << "No deepness frontend named [" << name << "] found.";
+		std::string const full_path = path + name + suffix;
+		if (std::ifstream(full_path.c_str()).is_open())
+			return delegate_open(full_path, args);
 	}
+	throw general_error_t() << "No deepness frontend named [" << name << "] found.";
 }
 
 }

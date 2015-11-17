@@ -158,20 +158,22 @@ def apply():
             body.write('Py_Initialize();')
             body.write('PyRun_SimpleString(')
             with body.indent():
-                body.write('"import pkg_resources"')
-                body.write('"import email"')
-                body.write('"import traceback"')
-                body.write('"seen = set()"')
-                body.write('"for frontend in pkg_resources.iter_entry_points(group=\'deepness_frontends\'):"')
-                body.write('"    if frontend.module_name in seen:"')
-                body.write('"        continue"')
-                body.write('"    seen.add(frontend.module_name)"')
-                body.write('"    try:"')
-                body.write('"        frontend_dist = pkg_resources.get_distribution(frontend.module_name)"')
-                body.write('"        frontend_meta = dict(email.message_from_string(frontend_dist.get_metadata(\'PKG-INFO\')).items())"')
-                body.write('"        print(\'\\t{}\\t{}\\t{}\\t{}\'.format(frontend.name, frontend_dist.project_name, frontend_meta[\'Summary\'], frontend.module_name))"')
-                body.write('"    except Exception as e:"')
-                body.write('"        traceback.print_exc()"')
+                body.write('"import pkg_resources\\n"')
+                body.write('"import email\\n"')
+                body.write('"import traceback\\n"')
+                body.write('"seen = set()\\n"')
+                body.write('"for frontend in pkg_resources.iter_entry_points(group=\'deepness_frontends\'):\\n"')
+                body.write('"    if frontend.module_name in seen:\\n"')
+                body.write('"        continue\\n"')
+                body.write('"    seen.add(frontend.module_name)\\n"')
+                body.write('"    try:\\n"')
+                body.write('"        frontend_dist = pkg_resources.get_distribution(frontend.module_name)\\n"')
+                body.write('"        frontend_meta = dict(email.message_from_string(frontend_dist.get_metadata(\'PKG-INFO\')).items())\\n"')
+                body.write('"        print(\'\\t{}\\t{}\\t{}\\t{}\'.format(frontend.name, frontend_dist.project_name, frontend_meta[\'Summary\'], frontend.module_name))\\n"')
+                body.write('"    except Exception as e:\\n"')
+                body.write('"        traceback.print_exc()\\n"')
+                body.write('"if not seen:\\n"')
+                body.write('"    print(\'\\t(no submodules)\')\\n"')
             body.write(');')
             body.write('return {};')
         body.write('PyImport_AppendInittab("{}", &{});'.format(module.name, module.initname()))
@@ -187,10 +189,11 @@ def apply():
         body.write('return pycontext_tt::create(std::move(out));')
         return body.f
     add(MFunction(
-        name='open',
+        name='deepness_open',
         ret=MVar(name='out', type=model.context),
         args=[MVar(name='args', type=TArray(base=string))],
         body=open_body,
+        export=True,
     ))
 
     return frontend_model
