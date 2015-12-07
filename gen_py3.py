@@ -10,7 +10,7 @@ def argcheck(body, method, arg, desc):
         body.write('throw general_error_t() << "Argument [{}] is not {}.";'.format(arg.name, desc)) 
 
 
-def write_python_read(body, module, el):
+def write_python_read(body, module, el, recurse=None):
     out = el.name
     if isinstance(el.type, MVariant):
         first = True
@@ -49,7 +49,7 @@ def write_python_read(body, module, el):
             with body.block():
                 subel = MVar(name='subel', type=el.type.base)
                 body.write('auto subel = PyList_GetItem({}, index);'.format(el.name))
-                subout = write_python_read(body, module, subel)
+                subout = (write_python_read if recurse is None else recurse)(body, module, subel, recurse=recurse)
                 body.write('{}.emplace_back({});'.format(out, subout))
         body.write('else if (PyTuple_Check({}))'.format(el.name))
         with body.block():
@@ -59,7 +59,7 @@ def write_python_read(body, module, el):
             with body.block():
                 subel = MVar(name='subel', type=el.type.base)
                 body.write('auto subel = PyTuple_GetItem({}, index);'.format(el.name))
-                subout = write_python_read(body, module, subel)
+                subout = (write_python_read if recurse is None else recurse)(body, module, subel, recurse=recurse)
                 body.write('{}.emplace_back({});'.format(out, subout))
         body.write('else')
         with body.indent():
@@ -87,19 +87,20 @@ def write_python_read(body, module, el):
 
 
 def write_python_write(body, module, el, recurse=None):
-    if recurse is None:
-        recurse = write_python_write
     out = next(gentemp)
     if isinstance(el.type, MVariant):
         first = True
+        body.write('PyObject *{};'.format(out))
         for vtype in el.type.vtypes:
             pytype = module.reverse[vtype.type]
             body.write('{}if ({})'.format('' if first else 'else ', MAccess(base=el, field=el.type.get_check(vtype.type)).format_call()))
             with body.block():
-                body.write('auto {} = {n}.tp_new(&{n}, nullptr, nullptr);'.format(out, n=pytype.typename()))
-                body.write('new (&reinterpret_cast<{} *>({})->data){}({});'.format(pytype.dataname(), out, vtype.format_type(), MAccess(base=el, field=el.type.get_get(vtype.type)).format_call()))
+                preout = next(gentemp)
+                body.write('auto {} = {n}.tp_new(&{n}, nullptr, nullptr);'.format(preout, n=pytype.typename()))
+                body.write('new (&reinterpret_cast<{} *>({})->data){}({});'.format(pytype.dataname(), preout, vtype.format_type(), MAccess(base=el, field=el.type.get_get(vtype.type)).format_call()))
+                body.write('{} = {};'.format(out, preout))
             first = False
-        out = '(PyObject *){}'.format(out)
+        body.write('else throw assertion_error_t() << "Native variant with unknown type.";')
     elif isinstance(el.type, MClass):
         pytype = module.reverse[el.type]
         body.write('auto {} = {n}.tp_new(&{n}, nullptr, nullptr);'.format(out, n=pytype.typename()))
@@ -113,7 +114,7 @@ def write_python_write(body, module, el, recurse=None):
         with body.block():
             subin = next(gentemp)
             body.write('auto &{} = {}[{}];'.format(subin, el.format_read(), index))
-            subout = write_python_write(body, module, MVar(name=subin, type=el.type.base), recurse=recurse)
+            subout = (write_python_write if recurse is None else recurse)(body, module, MVar(name=subin, type=el.type.base), recurse=recurse)
             body.write('PyTuple_SetItem({}, {}, {});'.format(out, index, subout))
     elif isinstance(el.type, (TInt32, TInt64)):
         body.write('auto {} = PyLong_FromLong({});'.format(out, el.name))
@@ -156,7 +157,7 @@ class MPyFunction(MBase):
         body.write('{};'.format(self.format_proto(module)))
         return body.f
 
-    def write_method_decl(self, module, withdefs):
+    def write_impl(self, module):
         body = Context()
         method = self.base
         prefix = self.parent.prefix()
@@ -243,20 +244,27 @@ class MPyType(MBase):
         function.parent = self
         self.functions.append(function)
 
-    def write_method_decl(self, withdefs):
+    def write_proto(self):
         mod = Context()
-            
-        mod.write('struct {}'.format(self.prefix()))
-        with mod.block(';'):
-            mod.write('PyObject_HEAD')
-            mod.write(self.type.write_var_decl('data'))
-        mod.write('')
+
+        mod.write('struct {};'.format(self.prefix()))
 
         for function in self.functions:
             mod.write(function.write_proto(self.parent))
         if self.call:
             mod.write(self.call.write_proto(self.parent))
 
+        return mod.f
+
+    def write_method_decl(self):
+        mod = Context()
+
+        mod.write('struct {}'.format(self.prefix()))
+        with mod.block(';'):
+            mod.write('PyObject_HEAD')
+            mod.write(self.type.write_var_decl('data'))
+        mod.write('')
+        
         mod.write('static PyMethodDef {}_methods[] ='.format(self.prefix()))
         with mod.block(';'):
             for function in self.functions:
@@ -314,11 +322,16 @@ class MPyType(MBase):
             mod.write('nullptr, /* tp_alloc */')
             mod.write('nullptr, /* tp_new */')
         mod.write('')
-        
+
+        return mod.f
+
+    def write_impl(self):
+        mod = Context()
+
         for function in self.functions:
-            mod.write(function.write_method_decl(self.parent, True))
+            mod.write(function.write_impl(self.parent))
         if self.call:
-            mod.write(self.call.write_method_decl(self.parent, True))
+            mod.write(self.call.write_impl(self.parent))
 
         return mod.f
 
@@ -342,19 +355,29 @@ class MPyModule(MBase):
         pytype.parent = self
         self.reverse[pytype.type] = pytype
         self.types.append(pytype)
+    
+    def write_proto(self):
+        mod = Context()
+        for pytype in self.types:
+            mod.write(pytype.write_proto())
+
+        for function in self.functions:
+            mod.write(function.write_proto(self))
+
+        return mod.f
 
     def write_method_decl(self, withdefs):
         mod = Context()
-
+        
         for pytype in self.types:
             mod.write('//' + '-' * 78)
             mod.write('// {}'.format(pytype.name))
-            mod.write(pytype.write_method_decl(True))
+            mod.write(pytype.write_method_decl())
 
         mod.write('//' + '-' * 78)
         for function in self.functions:
-            mod.write(function.write_method_decl(self, True))
-
+            mod.write(function.write_method_decl())
+        
         mod.write('static PyMethodDef {}_methods[] ='.format(self.prefix()))
         with mod.block(';'):
             for function in self.functions:
@@ -374,6 +397,22 @@ class MPyModule(MBase):
             mod.write('nullptr,')
             mod.write('nullptr')
         mod.write('')
+
+        mod.write('extern "C" PyObject *{}(void);'.format(self.initname()))
+
+        return mod.f
+
+    def write_impl(self):
+        mod = Context()
+
+        for pytype in self.types:
+            mod.write('//' + '-' * 78)
+            mod.write('// {}'.format(pytype.name))
+            mod.write(pytype.write_impl())
+
+        mod.write('//' + '-' * 78)
+        for function in self.functions:
+            mod.write(function.write_impl(self))
 
         mod.write('extern "C" PyObject *{}(void)'.format(self.initname()))
         with mod.block():

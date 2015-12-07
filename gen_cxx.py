@@ -10,10 +10,15 @@ def apply_hxx(model, withdefs=False):
         body.write(mclass.write_proto())
     body.write('')
     for mclass in model:
-        if withdefs and isinstance(mclass, MClass):
-            body.write('//' + '-' * 78)
-            body.write('// {}'.format(mclass.name))
-        body.write(mclass.write_method_decl(withdefs=withdefs))
+        body.write(mclass.write_method_decl(withdefs=False))
+    if withdefs:
+        for mclass in model:
+            if isinstance(mclass, MClass):
+                body.write('//' + '-' * 78)
+                body.write('// {}'.format(mclass.name))
+                body.write('')
+            body.write(mclass.write_impl())
+            body.write('')
     for mclass in model:
         if not isinstance(mclass, MPostRaw):
             continue

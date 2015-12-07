@@ -28,6 +28,7 @@ def add(melement):
     model.append(melement)
 
 elements = []
+prime_elements = []
 
 def add_element(element):
     element.add_field(MFunction(
@@ -39,6 +40,25 @@ def add_element(element):
         ],
         virtual=True,
     ))
+    element.add_field(MFunction(
+        name='note',
+        ret=void,
+        args=[
+            MVar(
+                name='category',
+                type=string,
+            ),
+            MVar(
+                name='message',
+                type=string,
+            ),
+            MVar(
+                name='details',
+                type=string,
+            ),
+        ],
+        virtual=True,
+    ))
     add(element)
     elements.append(element)
 
@@ -47,7 +67,7 @@ for pname, ptype in (
         ('float', floating),
         ('string', string),
         ):
-    add_element(MClass(
+    element = MClass(
         name=pname,
         identity=True,
         fields=[
@@ -64,31 +84,56 @@ for pname, ptype in (
             ),
             # TODO derived change elements
         ],
-    ))
+    )
+    add_element(element)
+    prime_elements.append(element)
+    if pname == 'int':
+        element_integer = element
 
 action_function = MFunctionObject(
     name='action_function',
     ret=void,
 )
 add(action_function)
-add_element(MClass(
+action = MClass(
     name='action',
+    identity=True,
+)
+add_element(action)
+prime_elements.append(action)
+
+subgroup = MClass(
+    name='subgroup',
     identity=True,
     fields=[
         MFunction(
-            name='define',
-            ret=void,
-            args=[
-                MVar(
-                    name='definition',
-                    type=action_function,
-                ),
-                # TODO allow async (new function?) w/ completion
-            ],
+            name='count',
             virtual=True,
+            ret=MVar(name='out', type=integer),
         ),
-    ],
-))
+        MFunction(
+            name='get',
+            virtual=True,
+            ret=MVar(name='out', type=integer),
+            args=[
+                MVar(name='index', type=integer)
+            ],
+        ),
+        MFunction(
+            name='remove',
+            virtual=True,
+            ret=void,
+            args=[MVar(name='value', type=integer)],
+        ),
+        MFunction(
+            name='add',
+            virtual=True,
+            ret=void,
+            args=[MVar(name='value', type=integer)],
+        ),
+    ]
+)
+add_element(subgroup)
 
 group = MClass(
     name='group',
@@ -103,11 +148,29 @@ group = MClass(
             name='remove',
             ret=void,
             virtual=True,
+            args=[MVar(name='position', type=integer)],
         ),
-        # TODO derived selection data (+ multiple selection configurations) (+ selection changes?)
+        MFunction(
+            name='clear',
+            ret=void,
+            virtual=True,
+        ),
+        MFunction(
+            name='select_one',
+            virtual=True,
+            ret=MVar(name='out', type=element_integer),
+            args=[MVar(name='name', type=string)],
+        ),
+        MFunction(
+            name='select_many',
+            virtual=True,
+            ret=MVar(name='out', type=subgroup),
+            args=[MVar(name='name', type=string)],
+        ),
     ]
 )
 add_element(group)
+prime_elements.append(group)
 
 element_variant = MVariant(
     name='element',
@@ -115,6 +178,22 @@ element_variant = MVariant(
 )
 add(element_variant)
 
+group.add_field(MFunction(
+    name='guide',
+    virtual=True,
+    ret=void,
+    args=[
+        MVar(name='element', type=element_variant)
+    ],
+))
+group.add_field(MFunction(
+    name='get',
+    virtual=True,
+    ret=MVar(name='out', type=element_variant),
+    args=[
+        MVar(name='element', type=integer)
+    ],
+))
 group.add_field(MFunction(
     name='add',
     virtual=True,
@@ -138,12 +217,6 @@ context = MClass(
     identity=True,
     fields=[
         MFunction(
-            name='add',
-            ret=void,
-            args=[MVar(name='group', type=group)],
-            virtual=True,
-        ),
-        MFunction(
             name='act',
             ret=void,
             args=[
@@ -154,15 +227,29 @@ context = MClass(
         MFunction(
             name='start',
             ret=void,
+            args=[MVar(name='group', type=group)],
             virtual=True,
         ),
     ] + [
         MFunction(
             name='create_' + element.oldname,
             ret=MVar(name='out', type=element),
+            args=[
+                MVar(name='name', type=string)
+            ] + [
+                MVar(
+                    name='arg',
+                    type=element_variant,
+                ),
+                MVar(
+                    name='definition',
+                    type=action_function,
+                ),
+            ] if element == action else [
+            ],
             virtual=True,
         )
-        for element in elements
+        for element in prime_elements
     ],
 )
 add(context)

@@ -11,6 +11,12 @@ general_error_t::general_error_t(general_error_t const &other) : buffer(other.bu
 
 general_error_t::operator std::string(void) const { return buffer.str(); }
 
+assertion_error_t::assertion_error_t(void) {}
+
+assertion_error_t::assertion_error_t(assertion_error_t const &other) : buffer(other.buffer.str()) {}
+
+assertion_error_t::operator std::string(void) const { return buffer.str(); }
+
 std::string read_argv(std::vector<std::string> &argv, std::string const &name, bool remove)
 {
 	std::string out;

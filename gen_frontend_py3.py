@@ -3,8 +3,6 @@ import model
 import gen_cxx
 import gen_py3
 
-# TODO helper functions read_config, read_argv
-# TODO finish<>
 
 def apply():
     module_model = [
@@ -12,6 +10,14 @@ def apply():
     ]
     frontend_model = gen_py3.apply('deepness_frontend', module_model)
     module = frontend_model[-1]
+    reverse = {}
+        
+    frontend_model.insert(0, MPreRaw(
+        hxx=[
+            'PyObject *pytype_{} = nullptr;'.format(element.name) for element in model.elements
+        ],
+        cxx=[]
+    ))
 
     def add(melement):
         frontend_model.append(melement)
@@ -37,6 +43,7 @@ def apply():
         )
         elements.append(pyelement)
         add(pyelement)
+        reverse[element] = pyelement
     add(context)
 
     # Helpers
@@ -61,12 +68,32 @@ def apply():
                     body.write('Py_INCREF(Py_None);')
                     body.write('return Py_None;')
             return '{}()'.format(temp)
-        return gen_py3.write_python_write(body, module, arg)
+        return gen_py3.write_python_write(body, module, arg, recurse=write_python_write)
     
     def write_python_read(body, module, arg):
         if arg.type in model.elements:
             return 'py{}::create({})'.format(arg.type.name, arg.format_read())
-        return gen_py3.write_python_read(body, module, arg)
+        if isinstance(arg.type, MVariant):
+            first = True
+            temp = next(gentemp)
+            out = '{}()'.format(temp)
+            body.write('auto {} = [&]()'.format(temp))
+            with body.block(';'):
+                for vtype in arg.type.vtypes:
+                    pytype = 'pytype_{}'.format(vtype.name)
+                    pywrapper = reverse[vtype.type]
+                    body.write('{}if (PyObject_IsInstance({}, reinterpret_cast<PyObject *>(&{})))'.format('' if first else 'else ', arg.name, pytype))
+                    with body.block():
+                        body.write('return {}::create_{}({}::create({}));'.format(
+                            arg.type.name, vtype.type.name, 
+                            pywrapper.name, 
+                            arg.name
+                        ))
+                    first = False
+                body.write('else throw general_error_t() << "Argument [{}] is not any variant of [{}].";'.format(arg.name, arg.type.oldname)) 
+        else:
+            return gen_py3.write_python_read(body, module, arg, recurse=write_python_read)
+        return out
 
     def write_call(body, name, ret, args, obj=None):
         body.write('auto function = PyObject_GetAttrString({}, "{}");'.format(obj.name, name))
@@ -106,13 +133,6 @@ def apply():
             result = write_python_read(body, module, ret)
             body.write('return {};'.format(MVar(name=result, type=ret.type).format_move()))
         return body.f
-    add_arg = MVar(name='group', type=model.group)
-    context.add_field(MFunction(
-        name='add',
-        ret=void,
-        args=[add_arg],
-        body=default_body('add', void, [add_arg]),
-    ))
     do_arg = MVar(name='action', type=model.action_function)
     def do_body():
         body = Context()
@@ -126,9 +146,11 @@ def apply():
         args=[do_arg],
         body=do_body,
     ))
+    start_arg = MVar(name='group', type=model.group)
     context.add_field(MFunction(
         name='start',
         ret=void,
+        args=[start_arg],
         body=default_body('start', void, []),
     ))
 
@@ -138,17 +160,20 @@ def apply():
             if method.ret is None:
                 continue
             pyelement.add_field(wrap_method(method, data))
+        arg = MVar(name='name', type=string)
         def context_body(element=element, pyelement=pyelement):
             body = Context()
             ret = MVar(name='out', type=element)
-            write_call(body, element.name, ret, [], obj=data)
+            write_call(body, element.name, ret, [arg], obj=data)
             body.write('return {}::create({});'.format(pyelement.name, ret.format_move()))
             return body.f
-        context.add_field(MFunction(
-            name='create_' + element.oldname,
-            ret=element,
-            body=context_body,
-        ))
+        if element in model.prime_elements:
+            context.add_field(MFunction(
+                name='create_' + element.oldname,
+                ret=element,
+                args=[arg],
+                body=context_body,
+            ))
 
     # Define open
     def open_body():
@@ -176,17 +201,22 @@ def apply():
                 body.write('"    print(\'\\t(no submodules)\')\\n"')
             body.write(');')
             body.write('return {};')
+        body.write('std::vector<wchar_t *> argv;')
+        body.write('argv.reserve(args.size());')
+        body.write('for (auto &arg : args) argv.push_back(Py_DecodeLocale(arg.c_str(), nullptr));')
+        body.write('if (!args.empty()) Py_SetProgramName(argv[0]);')
         body.write('PyImport_AppendInittab("{}", &{});'.format(module.name, module.initname()))
         body.write('Py_Initialize();')
+        body.write('PySys_SetArgv(args.size(), &argv[0]);')
+        body.write('for (auto &arg : argv) PyMem_RawFree(arg);')
         body.write('std::string name = read_argv(args, "python3-module");')
         body.write('if (name.empty()) name = read_config("python3-module");')
         body.write('if (name.empty()) throw general_error_t() << "No specified deepness python3 frontend module; You must specify a module.";')
         body.write('PyObject *module = PyImport_Import(PyUnicode_FromString(name.c_str()));')
         body.write('if (!module) throw general_error_t() << "Couldn\'t import deepness python3 frontend module [" << name << "].";')
-        #body.write('auto _clean1 = finish([&]() { Py_DECREF(module); });')
-        out = MRawVar(name='out', type='PyObject *')
-        write_call(body, 'open', out, model.open_sig.args, obj=MRawVar(name='module', type='PyObject *', pointer=True))
-        body.write('return pycontext_tt::create(std::move(out));')
+        for element in model.elements:
+            body.write('pytype_{n} = PyObject_GetAttrString(module, "{n}");'.format(n=element.name))
+        body.write('return pycontext_tt::create(module);')
         return body.f
     add(MFunction(
         name='deepness_open',

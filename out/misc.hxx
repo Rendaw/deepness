@@ -18,6 +18,20 @@ struct general_error_t
 inline std::ostream& operator <<(std::ostream &out, general_error_t const &error)
 	{ out << static_cast<std::string>(error); return out; }
 
+struct assertion_error_t
+{
+	assertion_error_t(void);
+	assertion_error_t(assertion_error_t const &other);
+	template <typename whatever_t> assertion_error_t &operator <<(whatever_t const &input) { buffer << input; return *this; }
+	operator std::string(void) const;
+
+	private:
+		std::stringstream buffer;
+};
+
+inline std::ostream& operator <<(std::ostream &out, assertion_error_t const &error)
+	{ out << static_cast<std::string>(error); return out; }
+
 template <typename T> void placement_destroy(T &t) { t.~T(); }
 
 template <typename F> struct finish_t
